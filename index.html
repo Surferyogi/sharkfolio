@@ -225,6 +225,15 @@
       </label>
 
       <div style="margin-top:14px">
+        <span class="lbl">Website link (optional)</span>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start">
+          <input type="text" id="linkUrl" placeholder="https://… a listing or company page" style="flex:1;min-width:220px" autocomplete="off">
+          <button class="btn" id="extractBtn">Extract from link</button>
+        </div>
+        <div class="hint" id="extractStatus" style="margin-top:7px">Anthropic's servers fetch the page (your browser can't, for most sites). Extracted facts fill the box above for you to review before scoring. Won't get past logins or paywalls.</div>
+      </div>
+
+      <div style="margin-top:14px">
         <span class="lbl">Screenshot (optional)</span>
         <div class="drop" id="drop" tabindex="0" role="button" aria-label="Upload a screenshot">
           Drop an image here, or click to choose. PNG / JPEG / WebP.
@@ -366,11 +375,12 @@
 <div class="toast" id="toast"></div>
 
 <script>
-const APP_VERSION = "v2026:07:22-23:22"; // Asia/Tokyo — bump on every change to this file
+const APP_VERSION = "v2026:07:23-08:39"; // Asia/Tokyo — bump on every change to this file
 const DEFAULT_MODEL = "claude-sonnet-5"; // change in Settings; must be a model string valid for your Anthropic account
 function getKey(){ try{return localStorage.getItem("shark:apikey")||"";}catch(e){return "";} }
 function getModel(){ try{return localStorage.getItem("shark:model")||DEFAULT_MODEL;}catch(e){return DEFAULT_MODEL;} }
 function apiHeaders(){ return {"Content-Type":"application/json","x-api-key":getKey(),"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"}; }
+function fetchHeaders(){ return Object.assign(apiHeaders(), {"anthropic-beta":"web-fetch-2025-09-10"}); } // web_fetch is beta; scoped to the extract call only
 
 const CRITERIA = [
   {key:"competence_fit", label:"Circle of Competence Fit", w:12, desc:"Falls within your stated competencies", profile:true},
@@ -620,6 +630,37 @@ Include an entry in "criteria" for every key listed above, in that order.`;
 
 /* ---------- scoring ---------- */
 document.getElementById("scoreBtn").addEventListener("click", runScore);
+
+/* ---------- extract from a website link (server-side web_fetch) ---------- */
+async function extractFromLink(){
+  const url=(document.getElementById("linkUrl").value||"").trim();
+  const st=document.getElementById("extractStatus");
+  if(!/^https?:\/\/[^\s.]+\.[^\s]+/.test(url)){ st.textContent="Enter a full URL starting with http:// or https://"; st.style.color="var(--rust)"; return; }
+  if(!getKey()){ toast("Add your Anthropic API key in Settings first","err"); document.querySelector('.tab[data-view="settings"]').click(); return; }
+  const btn=document.getElementById("extractBtn"); const old=btn.textContent; btn.disabled=true; btn.innerHTML='<span class="spin"></span> Fetching…';
+  st.textContent="Fetching the page and extracting the relevant facts…"; st.style.color="var(--muted)";
+  try{
+    const prompt="Use the web_fetch tool to retrieve the content at this URL, then extract ONLY investment-relevant facts that are actually present on the page.\nURL: "+url+"\n\nInclude, where the page states them: business or asset name, what it does, sector, location, asking price, revenue, cash flow or profit, other financials, growth, years established, reason for selling, deal terms, and any stated risks. Do NOT invent, infer, or estimate anything not on the page, and do NOT bring in information from other sources — only this fetched page. If a fact is not present, omit it. If the page could not be retrieved, was empty, or sat behind a login or paywall, say so plainly and report only what was actually accessible. Output a concise, readable brief in plain text (not JSON), headed with the source URL.";
+    const resp=await fetch("https://api.anthropic.com/v1/messages",{
+      method:"POST", headers:fetchHeaders(),
+      body:JSON.stringify({ model:getModel(), max_tokens:2000,
+        messages:[{role:"user",content:prompt}],
+        tools:[{type:"web_fetch_20250910",name:"web_fetch",max_uses:5}] })
+    });
+    if(!resp.ok){ let d=""; try{const eb=await resp.json(); d=eb&&eb.error&&eb.error.message?(" — "+eb.error.message):"";}catch(e){} throw new Error("Fetch failed ("+resp.status+")"+d); }
+    const data=await resp.json();
+    const txt=(data.content||[]).filter(b=>b.type==="text").map(b=>b.text).join("\n").trim();
+    if(!txt) throw new Error(data.stop_reason==="pause_turn"?"The fetch didn't finish in one pass — click Extract again to continue.":"No readable content came back from that page.");
+    const box=document.getElementById("inputText");
+    box.value = box.value.trim() ? (box.value.trim()+"\n\n— Extracted from "+url+" —\n"+txt) : txt;
+    st.textContent="Extracted — review the text above, edit if needed, then Score it."; st.style.color="var(--pine)";
+  }catch(err){
+    console.error(err);
+    st.innerHTML=escapeHtml(err.message||String(err))+' <span style="color:var(--muted-2)">— the page may be login-walled or JS-heavy, or your model may not support web fetch. Paste the details manually instead.</span>';
+    st.style.color="var(--rust)";
+  }finally{ btn.disabled=false; btn.textContent=old; }
+}
+document.getElementById("extractBtn").addEventListener("click", extractFromLink);
 async function runScore(){
   const text=inputText.value.trim();
   if(!text && !pendingImage){ toast("Paste some text or add a screenshot first","err"); return; }
