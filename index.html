@@ -366,7 +366,7 @@
 <div class="toast" id="toast"></div>
 
 <script>
-const APP_VERSION = "v2026:07:21-10:54"; // Asia/Tokyo — bump on every change to this file
+const APP_VERSION = "v2026:07:22-23:22"; // Asia/Tokyo — bump on every change to this file
 const DEFAULT_MODEL = "claude-sonnet-5"; // change in Settings; must be a model string valid for your Anthropic account
 function getKey(){ try{return localStorage.getItem("shark:apikey")||"";}catch(e){return "";} }
 function getModel(){ try{return localStorage.getItem("shark:model")||DEFAULT_MODEL;}catch(e){return DEFAULT_MODEL;} }
@@ -624,6 +624,7 @@ async function runScore(){
   const text=inputText.value.trim();
   if(!text && !pendingImage){ toast("Paste some text or add a screenshot first","err"); return; }
   if(!getKey()){ toast("Add your Anthropic API key in Settings first","err"); document.querySelector('.tab[data-view="settings"]').click(); return; }
+  lastRawResponse=""; lastStopReason="";
   const btn=document.getElementById("scoreBtn"); btn.disabled=true; btn.innerHTML='<span class="spin"></span> Reading & scoring…';
   document.getElementById("result").innerHTML="";
 
@@ -634,28 +635,74 @@ async function runScore(){
   try{
     const resp=await fetch("https://api.anthropic.com/v1/messages",{
       method:"POST", headers:apiHeaders(),
-      body:JSON.stringify({ model:getModel(), max_tokens:4000, messages:[{role:"user",content}] })
+      body:JSON.stringify({ model:getModel(), max_tokens:8000,
+        messages:[{role:"user",content},{role:"assistant",content:"{"}] })  // prefill forces JSON-only output
     });
-    if(!resp.ok){ throw new Error(resp.status===401?"Anthropic rejected the request (401) — check your API key and model string in Settings.":"API returned "+resp.status); }
+    if(!resp.ok){
+      let detail=""; try{ const eb=await resp.json(); detail=eb&&eb.error&&eb.error.message?(" — "+eb.error.message):""; }catch(e){}
+      throw new Error((resp.status===401?"Anthropic rejected the request (401): check your API key and model string in Settings":"API returned "+resp.status)+detail);
+    }
     const data=await resp.json();
-    const raw=(data.content||[]).filter(b=>b.type==="text").map(b=>b.text).join("\n").trim();
+    let raw=(data.content||[]).filter(b=>b.type==="text").map(b=>b.text).join("\n").trim();
+    if(!raw) throw new Error("The model returned no text to score.");
+    raw="{"+raw;                                   // restore the prefilled brace
     const parsed=parseJson(raw);
-    if(!parsed) throw new Error("Could not parse a scorecard from the response.");
+    if(!parsed){
+      lastRawResponse=raw; lastStopReason=data.stop_reason||"";
+      throw new Error(data.stop_reason==="max_tokens"
+        ? "The response was cut off before a complete scorecard was returned."
+        : "Could not read a scorecard from the response.");
+    }
     const scored=computeScore(parsed);
+    scored.repaired = lastParseWasRepaired || data.stop_reason==="max_tokens";
     renderResult(scored);
     saveToHistory(scored);
   }catch(err){
     console.error(err);
-    document.getElementById("result").innerHTML=`<div class="panel pad" style="margin-top:16px;border-color:var(--rust-dim)"><b style="color:var(--rust)">Scoring failed.</b><div class="hint" style="margin-top:6px">${escapeHtml(err.message||String(err))}. Try again, shorten very long text, or re-attach the image.</div></div>`;
+    const diag = lastRawResponse
+      ? `<details style="margin-top:12px"><summary style="cursor:pointer;color:var(--muted);font-size:12px">Show what the model actually returned${lastStopReason?" (stop reason: "+escapeHtml(lastStopReason)+")":""}</summary><pre class="mono" style="white-space:pre-wrap;word-break:break-word;font-size:11.5px;color:var(--muted);background:var(--ink);border:1px solid var(--line);border-radius:4px;padding:10px;margin-top:8px;max-height:280px;overflow:auto">${escapeHtml(lastRawResponse.slice(0,2000))}</pre></details>` : "";
+    document.getElementById("result").innerHTML=`<div class="panel pad" style="margin-top:16px;border-color:var(--rust-dim)"><b style="color:var(--rust)">Scoring failed.</b><div class="hint" style="margin-top:6px">${escapeHtml(err.message||String(err))} Try again, or paste a fuller description of the opportunity.</div>${diag}</div>`;
   }finally{
     btn.disabled=false; btn.textContent="Score it";
   }
 }
+let lastParseWasRepaired=false, lastRawResponse="", lastStopReason="";
+/* Close any open strings/brackets and drop a dangling comma, so a response cut
+   off mid-JSON can still be salvaged. Returns a candidate string or null. */
+function closeOpen(s){
+  let inStr=false, esc=false; const stack=[];
+  for(let i=0;i<s.length;i++){
+    const ch=s[i];
+    if(inStr){ if(esc){esc=false;} else if(ch==="\\"){esc=true;} else if(ch==='"'){inStr=false;} continue; }
+    if(ch==='"'){ inStr=true; continue; }
+    if(ch==="{"||ch==="[") stack.push(ch==="{"?"}":"]");
+    else if(ch==="}"||ch==="]") stack.pop();
+  }
+  let out=s;
+  if(inStr) out+='"';
+  out=out.replace(/,\s*$/,"");
+  if(/[:,]\s*$/.test(out)) return null;         // dangling key or separator — caller trims further
+  for(let i=stack.length-1;i>=0;i--) out+=stack[i];
+  return out;
+}
 function parseJson(raw){
-  let s=raw.replace(/^```json/i,"").replace(/^```/,"").replace(/```$/,"").trim();
-  try{return JSON.parse(s);}catch(e){}
+  lastParseWasRepaired=false;
+  if(!raw) return null;
+  let s=String(raw).replace(/```json/gi,"").replace(/```/g,"").trim();
+  try{ return JSON.parse(s); }catch(e){}
   const a=s.indexOf("{"), b=s.lastIndexOf("}");
-  if(a>-1&&b>a){ try{return JSON.parse(s.slice(a,b+1));}catch(e){} }
+  if(a>-1&&b>a){ try{ return JSON.parse(s.slice(a,b+1)); }catch(e){} }
+  // Truncated? Trim back to successive structural boundaries and try to close it.
+  if(a>-1){
+    let frag=s.slice(a);
+    for(let n=0;n<60 && frag.length>2;n++){
+      const cand=closeOpen(frag);
+      if(cand){ try{ const o=JSON.parse(cand); lastParseWasRepaired=true; return o; }catch(e){} }
+      const cut=Math.max(frag.lastIndexOf(","),frag.lastIndexOf("}"),frag.lastIndexOf("]"),frag.lastIndexOf('"'));
+      if(cut<=0) break;
+      frag=frag.slice(0,cut);
+    }
+  }
   return null;
 }
 
@@ -768,6 +815,7 @@ function renderResult(r, mountId){
       </div>
     </div>
     <div class="cov"><span class="mono" style="color:var(--pine)">◐</span><div><b>Evidence coverage ${r.coverage}%.</b> ${covNote}</div></div>
+    ${r.repaired?`<div class="cov" style="border-color:var(--brass-dim)"><span class="mono" style="color:var(--brass)">!</span><div><b>Partial response.</b> The model's reply was cut short; this scorecard was rebuilt from the portion that came through, so some criteria may be missing rather than genuinely unassessable. Re-run for a complete read.</div></div>`:""}
 
     <div class="sec-title">Scorecard <span class="rule"></span></div>
     ${rowsHtml}
