@@ -104,8 +104,12 @@
   /* Dropzone */
   .drop{border:1px dashed var(--line);border-radius:var(--r);padding:14px;text-align:center;color:var(--muted);font-size:13px;cursor:pointer;transition:.15s;background:var(--ink)}
   .drop:hover,.drop.over{border-color:var(--brass);color:var(--bone)}
-  .thumb{display:flex;align-items:center;gap:12px;margin-top:10px;font-size:12.5px;color:var(--muted)}
-  .thumb img{height:52px;width:52px;object-fit:cover;border-radius:4px;border:1px solid var(--line)}
+  .thumb{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-top:10px;font-size:12.5px;color:var(--muted)}
+  .thumbchip{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:6px;padding:5px 8px 5px 5px;background:var(--ink-2)}
+  .thumbchip img{height:42px;width:42px;object-fit:cover;border-radius:4px;border:1px solid var(--line)}
+  .thumbchip .tname{max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .thumbx{appearance:none;background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px;line-height:1;padding:2px 4px}
+  .thumbx:hover{color:var(--rust)}
 
   /* Gauge / signature */
   .verdict-head{display:flex;gap:22px;flex-wrap:wrap;align-items:center}
@@ -236,9 +240,9 @@
       <div style="margin-top:14px">
         <span class="lbl">Screenshot (optional)</span>
         <div class="drop" id="drop" tabindex="0" role="button" aria-label="Upload a screenshot">
-          Drop an image here, or click to choose. PNG / JPEG / WebP.
+          Drop images here, or click to choose. Multiple allowed. PNG / JPEG / WebP.
         </div>
-        <input type="file" id="file" accept="image/png,image/jpeg,image/webp" hidden>
+        <input type="file" id="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
         <div class="thumb" id="thumb" style="display:none"></div>
       </div>
 
@@ -375,7 +379,7 @@
 <div class="toast" id="toast"></div>
 
 <script>
-const APP_VERSION = "v2026:07:23-08:39"; // Asia/Tokyo — bump on every change to this file
+const APP_VERSION = "v2026:07:23-08:51"; // Asia/Tokyo — bump on every change to this file
 const DEFAULT_MODEL = "claude-sonnet-5"; // change in Settings; must be a model string valid for your Anthropic account
 function getKey(){ try{return localStorage.getItem("shark:apikey")||"";}catch(e){return "";} }
 function getModel(){ try{return localStorage.getItem("shark:model")||DEFAULT_MODEL;}catch(e){return DEFAULT_MODEL;} }
@@ -401,7 +405,8 @@ const DEFAULT_COMPETENCE = "Deep operator's knowledge in: industrial gases and i
 
 let profile = {comp:DEFAULT_COMPETENCE,port:"",bench:"",hurdle:"",risk:"",weights:{...DEFAULT_WEIGHTS}};
 let history = [];
-let pendingImage = null; // {dataUrl, b64, media_type, name}
+let pendingImages = []; // [{dataUrl, b64, media_type, name}]
+const MAX_IMAGES = 10;
 
 /* Benchmark = S&P 500 total return. Seeded with REAL, sourced figures (fetched mid-2026);
    the trailing figure lazy-refreshes ~monthly on open. Sources noted per field. */
@@ -566,19 +571,32 @@ drop.addEventListener("click",()=>fileInput.click());
 drop.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();fileInput.click();}});
 ["dragenter","dragover"].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add("over");}));
 ["dragleave","drop"].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove("over");}));
-drop.addEventListener("drop",e=>{const f=e.dataTransfer.files[0]; if(f) handleFile(f);});
-fileInput.addEventListener("change",e=>{const f=e.target.files[0]; if(f) handleFile(f);});
-function handleFile(f){
-  if(!/^image\/(png|jpeg|webp)$/.test(f.type)){ toast("Use a PNG, JPEG, or WebP image","err"); return; }
-  const rd=new FileReader();
-  rd.onload=()=>{ const dataUrl=rd.result; pendingImage={dataUrl,b64:dataUrl.split(",")[1],media_type:f.type,name:f.name};
-    thumb.style.display="flex"; thumb.innerHTML=`<img src="${dataUrl}" alt=""><span>${f.name}</span><button class="btn ghost" style="padding:5px 10px;font-size:12px" id="rmImg">Remove</button>`;
-    document.getElementById("rmImg").addEventListener("click",()=>{pendingImage=null;thumb.style.display="none";fileInput.value="";});
-  };
-  rd.onerror=()=>toast("Could not read that image","err");
-  rd.readAsDataURL(f);
+drop.addEventListener("drop",e=>{ if(e.dataTransfer.files) handleFiles(e.dataTransfer.files); });
+fileInput.addEventListener("change",e=>{ handleFiles(e.target.files); fileInput.value=""; });
+function handleFiles(list){
+  const files=Array.from(list||[]);
+  if(!files.length) return;
+  let added=0, skipped=0;
+  for(const f of files){
+    if(!/^image\/(png|jpeg|webp)$/.test(f.type)){ skipped++; continue; }
+    if(pendingImages.length >= MAX_IMAGES){ toast("Up to "+MAX_IMAGES+" images","err"); break; }
+    const rd=new FileReader();
+    rd.onload=()=>{ const dataUrl=rd.result; if(pendingImages.length<MAX_IMAGES){ pendingImages.push({dataUrl,b64:dataUrl.split(",")[1],media_type:f.type,name:f.name}); renderThumbs(); } };
+    rd.onerror=()=>toast("Could not read "+(f.name||"an image"),"err");
+    rd.readAsDataURL(f);
+    added++;
+  }
+  if(skipped) toast(skipped+" file"+(skipped>1?"s":"")+" skipped (need PNG, JPEG, or WebP)","err");
 }
-document.getElementById("clearBtn").addEventListener("click",()=>{ inputText.value=""; pendingImage=null; thumb.style.display="none"; fileInput.value=""; document.getElementById("result").innerHTML=""; });
+function renderThumbs(){
+  if(!pendingImages.length){ thumb.style.display="none"; thumb.innerHTML=""; return; }
+  thumb.style.display="flex";
+  thumb.innerHTML = pendingImages.map((im,i)=>`<span class="thumbchip"><img src="${im.dataUrl}" alt=""><span class="tname">${escapeHtml(im.name||("image "+(i+1)))}</span><button class="thumbx" data-rm="${i}" aria-label="Remove image" title="Remove">✕</button></span>`).join("")
+    + (pendingImages.length>1?`<button class="btn ghost" id="clearImgs" style="padding:5px 10px;font-size:12px">Remove all</button>`:"");
+  thumb.querySelectorAll("[data-rm]").forEach(b=>b.addEventListener("click",()=>{ pendingImages.splice(+b.dataset.rm,1); renderThumbs(); }));
+  const ca=document.getElementById("clearImgs"); if(ca) ca.addEventListener("click",()=>{ pendingImages=[]; renderThumbs(); });
+}
+document.getElementById("clearBtn").addEventListener("click",()=>{ inputText.value=""; pendingImages=[]; renderThumbs(); fileInput.value=""; document.getElementById("result").innerHTML=""; });
 
 /* ---------- prompt ---------- */
 function buildPrompt(){
@@ -663,15 +681,15 @@ async function extractFromLink(){
 document.getElementById("extractBtn").addEventListener("click", extractFromLink);
 async function runScore(){
   const text=inputText.value.trim();
-  if(!text && !pendingImage){ toast("Paste some text or add a screenshot first","err"); return; }
+  if(!text && !pendingImages.length){ toast("Paste some text or add a screenshot first","err"); return; }
   if(!getKey()){ toast("Add your Anthropic API key in Settings first","err"); document.querySelector('.tab[data-view="settings"]').click(); return; }
   lastRawResponse=""; lastStopReason="";
   const btn=document.getElementById("scoreBtn"); btn.disabled=true; btn.innerHTML='<span class="spin"></span> Reading & scoring…';
   document.getElementById("result").innerHTML="";
 
   const content=[];
-  if(pendingImage) content.push({type:"image",source:{type:"base64",media_type:pendingImage.media_type,data:pendingImage.b64}});
-  content.push({type:"text",text: buildPrompt() + "\n\nOPPORTUNITY MATERIAL:\n" + (text || "(see attached image)")});
+  pendingImages.forEach(im=>content.push({type:"image",source:{type:"base64",media_type:im.media_type,data:im.b64}}));
+  content.push({type:"text",text: buildPrompt() + "\n\nOPPORTUNITY MATERIAL:\n" + (text || "(the material is in the attached image(s))")});
 
   try{
     const resp=await fetch("https://api.anthropic.com/v1/messages",{
