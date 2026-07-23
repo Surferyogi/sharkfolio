@@ -379,7 +379,7 @@
 <div class="toast" id="toast"></div>
 
 <script>
-const APP_VERSION = "v2026:07:23-08:51"; // Asia/Tokyo — bump on every change to this file
+const APP_VERSION = "v2026:07:23-09:13"; // Asia/Tokyo — bump on every change to this file
 const DEFAULT_MODEL = "claude-sonnet-5"; // change in Settings; must be a model string valid for your Anthropic account
 function getKey(){ try{return localStorage.getItem("shark:apikey")||"";}catch(e){return "";} }
 function getModel(){ try{return localStorage.getItem("shark:model")||DEFAULT_MODEL;}catch(e){return DEFAULT_MODEL;} }
@@ -643,7 +643,7 @@ Return ONE JSON object and nothing else — no prose, no markdown fences. Schema
  "bear_case": string,                // inversion — how this most plausibly loses money
  "market_beating_view": string       // compare the opportunity's plausible return to the APPROVED benchmark figure in the mandate; you may cite that benchmark number. If the opportunity states no basis for its own expected return, say the comparison can't be made and mark the market_beating criterion not assessable.
 }
-Include an entry in "criteria" for every key listed above, in that order.`;
+Include an entry in "criteria" for every key listed above, in that order. Your entire reply must be the JSON object only: the first character is { and the last character is }, with no text, explanation, or code fences before or after.`;
 }
 
 /* ---------- scoring ---------- */
@@ -695,7 +695,7 @@ async function runScore(){
     const resp=await fetch("https://api.anthropic.com/v1/messages",{
       method:"POST", headers:apiHeaders(),
       body:JSON.stringify({ model:getModel(), max_tokens:8000,
-        messages:[{role:"user",content},{role:"assistant",content:"{"}] })  // prefill forces JSON-only output
+        messages:[{role:"user",content}] })
     });
     if(!resp.ok){
       let detail=""; try{ const eb=await resp.json(); detail=eb&&eb.error&&eb.error.message?(" — "+eb.error.message):""; }catch(e){}
@@ -704,7 +704,6 @@ async function runScore(){
     const data=await resp.json();
     let raw=(data.content||[]).filter(b=>b.type==="text").map(b=>b.text).join("\n").trim();
     if(!raw) throw new Error("The model returned no text to score.");
-    raw="{"+raw;                                   // restore the prefilled brace
     const parsed=parseJson(raw);
     if(!parsed){
       lastRawResponse=raw; lastStopReason=data.stop_reason||"";
