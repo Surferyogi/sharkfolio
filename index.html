@@ -326,9 +326,12 @@
         <div class="eyebrow">Scored to date</div>
         <div class="btn-row">
           <button class="btn ghost" id="exportBtn">Export JSON</button>
+          <button class="btn ghost" id="importBtn">Import JSON</button>
+          <input type="file" id="importFile" accept="application/json,.json" hidden>
           <button class="btn ghost danger" id="wipeBtn">Clear all</button>
         </div>
       </div>
+      <p class="hint" style="margin-top:10px">History is stored in this browser on this device — it does not sync between your phone and laptop, and clearing site data erases it. To move or back up evaluations: <b style="color:var(--bone)">Export JSON</b> on one device, then <b style="color:var(--bone)">Import JSON</b> on the other. Importing merges by entry, so re-importing the same file adds nothing and never overwrites what's already here.</p>
       <div id="historyList"></div>
     </div>
   </section>
@@ -387,7 +390,7 @@
 <div class="toast" id="toast"></div>
 
 <script>
-const APP_VERSION = "v2026:07:24-00:17"; // Asia/Tokyo — bump on every change to this file
+const APP_VERSION = "v2026:07:24-00:34"; // Asia/Tokyo — bump on every change to this file
 const DEFAULT_MODEL = "claude-sonnet-5"; // change in Settings; must be a model string valid for your Anthropic account
 function getKey(){ try{return localStorage.getItem("shark:apikey")||"";}catch(e){return "";} }
 function getModel(){ try{return localStorage.getItem("shark:model")||DEFAULT_MODEL;}catch(e){return DEFAULT_MODEL;} }
@@ -1021,6 +1024,58 @@ document.getElementById("exportBtn").addEventListener("click",()=>{
   const blob=new Blob([JSON.stringify(history,null,2)],{type:"application/json"});
   const a=document.createElement("a"); a.href=URL.createObjectURL(blob);
   a.download="sharkfolio-history.json"; a.click(); URL.revokeObjectURL(a.href);
+});
+
+/* ---------- import (merge by entry id; never overwrites) ---------- */
+function validEntry(e){
+  if(!e || typeof e!=="object") return null;
+  const full = (e.full && typeof e.full==="object") ? e.full : null;
+  if(!full) return null;
+  const ts = Number(e.ts) || Number(full.ts) || 0;
+  if(!ts) return null;
+  const num=v=>{ const n=Number(v); return isFinite(n)?n:0; };
+  return {
+    id: String(e.id || ts),
+    ts,
+    asset_name: String(e.asset_name || full.asset_name || "Not stated"),
+    composite: num(e.composite!=null?e.composite:full.composite),
+    coverage:  num(e.coverage!=null?e.coverage:full.coverage),
+    verdict:   String(e.verdict || full.verdict || "—"),
+    cls:       String(e.cls || full.cls || "grey"),
+    full
+  };
+}
+document.getElementById("importBtn").addEventListener("click",()=>document.getElementById("importFile").click());
+document.getElementById("importFile").addEventListener("change",e=>{
+  const f=e.target.files && e.target.files[0];
+  e.target.value="";                                  // allow re-importing the same file
+  if(!f) return;
+  const rd=new FileReader();
+  rd.onerror=()=>toast("Could not read that file","err");
+  rd.onload=async()=>{
+    let data;
+    try{ data=JSON.parse(rd.result); }catch(err){ toast("That file isn't valid JSON","err"); return; }
+    const raw = Array.isArray(data) ? data : (data && Array.isArray(data.history) ? data.history : null);
+    if(!raw){ toast("No Sharkfolio history found in that file","err"); return; }
+    const have=new Set(history.map(h=>h.id));
+    let added=0, dupes=0, bad=0;
+    for(const item of raw){
+      const v=validEntry(item);
+      if(!v){ bad++; continue; }
+      if(have.has(v.id)){ dupes++; continue; }         // keep what's already here
+      history.push(v); have.add(v.id); added++;
+    }
+    history.sort((a,b)=>b.ts-a.ts);
+    const before=history.length; history=history.slice(0,100);
+    const trimmed=before-history.length;
+    await storeSet("shark:history",history); renderHistory();
+    const parts=[added+" added"];
+    if(dupes) parts.push(dupes+" already here");
+    if(bad) parts.push(bad+" unreadable");
+    if(trimmed) parts.push(trimmed+" trimmed past the 100 limit");
+    toast(parts.join(" · "), added?undefined:"err");
+  };
+  rd.readAsText(f);
 });
 
 /* ---------- utils ---------- */
