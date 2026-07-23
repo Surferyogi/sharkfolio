@@ -169,14 +169,17 @@
   .cov b{color:var(--bone);font-family:"IBM Plex Mono"}
 
   /* History */
-  .hrow{display:flex;align-items:center;gap:14px;padding:13px 15px;border:1px solid var(--line-soft);border-radius:var(--r);margin-top:10px;cursor:pointer;background:var(--ink-2);transition:.15s}
+  .hrow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:13px 15px;border:1px solid var(--line-soft);border-radius:var(--r);margin-top:10px;cursor:pointer;background:var(--ink-2);transition:.15s}
   .hrow:hover{border-color:var(--brass)}
-  .hscore{font-family:"IBM Plex Mono";font-weight:600;font-size:17px;width:46px;text-align:center}
-  .hmeta{flex:1;min-width:0}
+  .hscore{font-family:"IBM Plex Mono";font-weight:600;font-size:17px;width:46px;text-align:center;flex:0 0 46px}
+  .hmeta{flex:1 1 130px;min-width:110px}
+  .hrow .pill{white-space:nowrap;flex:0 0 auto}
   .hmeta .nm{font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .hmeta .dt{font-size:11.5px;color:var(--muted-2);font-family:"IBM Plex Mono"}
-  .hedit{width:100%;background:var(--ink);border:1px solid var(--focus);color:var(--bone);border-radius:4px;padding:6px 8px;font-family:"Inter";font-size:14px;font-weight:600}
-  .hbtns{display:flex;gap:6px;flex-shrink:0}
+  .hedit{width:100%;box-sizing:border-box;background:var(--ink);border:1px solid var(--focus);color:var(--bone);border-radius:4px;padding:10px 10px;font-family:"Inter";font-size:16px;font-weight:600}
+  .hrow.editing .hmeta{flex:1 1 100%;order:-1;min-width:0}
+  .hrow.editing .pill,.hrow.editing .hscore{display:none}
+  .hbtns{display:flex;gap:6px;flex-shrink:0;margin-left:auto}
   .hicon{appearance:none;background:none;border:1px solid var(--line);border-radius:4px;color:var(--muted);cursor:pointer;font-size:12px;padding:6px 9px;transition:.15s}
   .hicon:hover{border-color:var(--brass);color:var(--bone)}
   .hicon.danger:hover{border-color:var(--rust);color:var(--rust)}
@@ -384,7 +387,7 @@
 <div class="toast" id="toast"></div>
 
 <script>
-const APP_VERSION = "v2026:07:23-12:29"; // Asia/Tokyo — bump on every change to this file
+const APP_VERSION = "v2026:07:24-00:17"; // Asia/Tokyo — bump on every change to this file
 const DEFAULT_MODEL = "claude-sonnet-5"; // change in Settings; must be a model string valid for your Anthropic account
 function getKey(){ try{return localStorage.getItem("shark:apikey")||"";}catch(e){return "";} }
 function getModel(){ try{return localStorage.getItem("shark:model")||DEFAULT_MODEL;}catch(e){return DEFAULT_MODEL;} }
@@ -987,10 +990,14 @@ function renderHistory(){
   wrap.querySelectorAll("[data-edit]").forEach(b=>b.addEventListener("click",e=>{
     e.stopPropagation();
     const row=b.closest(".hrow"), h=history.find(x=>x.id===b.dataset.edit); if(!row||!h) return;
-    const nm=row.querySelector(".nm"); if(!nm||row.querySelector(".hedit")) return;
+    if(row.querySelector(".hedit")){ row.querySelector(".hedit").blur(); return; }   // second tap = save
+    const nm=row.querySelector(".nm"); if(!nm) return;
+    row.classList.add("editing"); b.textContent="Save";
     const inp=document.createElement("input");
     inp.type="text"; inp.className="hedit"; inp.value=h.asset_name||""; inp.setAttribute("aria-label","Pitch name");
-    nm.replaceWith(inp); inp.focus(); inp.select();
+    inp.autocapitalize="sentences"; inp.autocomplete="off"; inp.spellcheck=false; inp.enterKeyHint="done";
+    nm.replaceWith(inp);
+    setTimeout(()=>{ inp.focus(); inp.select(); },0);   // iOS needs focus after the node is laid out
     let done=false;
     const save=async()=>{
       if(done) return; done=true;
