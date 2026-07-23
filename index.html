@@ -175,6 +175,11 @@
   .hmeta{flex:1;min-width:0}
   .hmeta .nm{font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .hmeta .dt{font-size:11.5px;color:var(--muted-2);font-family:"IBM Plex Mono"}
+  .hedit{width:100%;background:var(--ink);border:1px solid var(--focus);color:var(--bone);border-radius:4px;padding:6px 8px;font-family:"Inter";font-size:14px;font-weight:600}
+  .hbtns{display:flex;gap:6px;flex-shrink:0}
+  .hicon{appearance:none;background:none;border:1px solid var(--line);border-radius:4px;color:var(--muted);cursor:pointer;font-size:12px;padding:6px 9px;transition:.15s}
+  .hicon:hover{border-color:var(--brass);color:var(--bone)}
+  .hicon.danger:hover{border-color:var(--rust);color:var(--rust)}
 
   /* misc */
   .empty{text-align:center;color:var(--muted);padding:46px 20px;font-size:14px}
@@ -379,7 +384,7 @@
 <div class="toast" id="toast"></div>
 
 <script>
-const APP_VERSION = "v2026:07:23-09:20"; // Asia/Tokyo — bump on every change to this file
+const APP_VERSION = "v2026:07:23-12:29"; // Asia/Tokyo — bump on every change to this file
 const DEFAULT_MODEL = "claude-sonnet-5"; // change in Settings; must be a model string valid for your Anthropic account
 function getKey(){ try{return localStorage.getItem("shark:apikey")||"";}catch(e){return "";} }
 function getModel(){ try{return localStorage.getItem("shark:model")||DEFAULT_MODEL;}catch(e){return DEFAULT_MODEL;} }
@@ -669,7 +674,7 @@ Include an entry in "criteria" for every key listed above, in that order. Your e
 }
 
 /* ---------- scoring ---------- */
-document.getElementById("scoreBtn").addEventListener("click", runScore);
+document.getElementById("scoreBtn").addEventListener("click", ()=>runScore(false));
 
 /* ---------- extract from a website link (server-side web_fetch) ---------- */
 async function extractFromLink(){
@@ -701,11 +706,27 @@ async function extractFromLink(){
   }finally{ btn.disabled=false; btn.textContent=old; }
 }
 document.getElementById("extractBtn").addEventListener("click", extractFromLink);
-async function runScore(){
+/* ---------- keep the screen awake while scoring ----------
+   iOS suspends a backgrounded/locked page and cancels its in-flight request.
+   The Wake Lock API prevents the *auto*-lock during a score; if the phone is
+   locked manually or the app is backgrounded anyway, we retry once on return. */
+let wakeLock=null, scoringInFlight=false, wasHiddenDuringScore=false, autoRetryArmed=false;
+async function acquireWake(){
+  try{ if("wakeLock" in navigator && document.visibilityState==="visible"){ wakeLock=await navigator.wakeLock.request("screen"); } }
+  catch(e){ /* denied or unsupported — degrade quietly */ }
+}
+async function releaseWake(){ try{ if(wakeLock){ await wakeLock.release(); } }catch(e){} wakeLock=null; }
+document.addEventListener("visibilitychange",()=>{
+  if(document.visibilityState==="hidden"){ if(scoringInFlight) wasHiddenDuringScore=true; return; }
+  if(scoringInFlight && !wakeLock) acquireWake();            // wake locks drop when hidden — take it back
+  if(autoRetryArmed){ autoRetryArmed=false; toast("Resuming the score…"); runScore(true); }
+});
+
+async function runScore(isRetry){
   const text=inputText.value.trim();
   if(!text && !pendingImages.length){ toast("Paste some text or add a screenshot first","err"); return; }
   if(!getKey()){ toast("Add your Anthropic API key in Settings first","err"); document.querySelector('.tab[data-view="settings"]').click(); return; }
-  lastRawResponse=""; lastStopReason="";
+  lastRawResponse=""; lastStopReason=""; wasHiddenDuringScore=false; scoringInFlight=true; acquireWake();
   const btn=document.getElementById("scoreBtn"); btn.disabled=true; btn.innerHTML='<span class="spin"></span> Reading & scoring…';
   document.getElementById("result").innerHTML="";
 
@@ -740,13 +761,20 @@ async function runScore(){
   }catch(err){
     console.error(err);
     let msg=err.message||String(err);
-    if(/load failed|failed to fetch|networkerror|network request failed/i.test(msg)){
+    const netFail=/load failed|failed to fetch|networkerror|network request failed|aborted/i.test(msg);
+    if(netFail && wasHiddenDuringScore){
+      if(!isRetry && document.visibilityState!=="visible"){ autoRetryArmed=true; }
+      msg = autoRetryArmed
+        ? "The screen locked mid-request, which iOS cancels. Sharkfolio will retry automatically when you reopen it."
+        : "The screen locked or the app went to the background mid-request, which iOS cancels. Tap Score it to run it again.";
+    } else if(netFail){
       msg="The request didn't reach Anthropic — usually the payload was too large or the connection dropped. Try fewer images, or score in two batches.";
     }
     const diag = lastRawResponse
       ? `<details style="margin-top:12px"><summary style="cursor:pointer;color:var(--muted);font-size:12px">Show what the model actually returned${lastStopReason?" (stop reason: "+escapeHtml(lastStopReason)+")":""}</summary><pre class="mono" style="white-space:pre-wrap;word-break:break-word;font-size:11.5px;color:var(--muted);background:var(--ink);border:1px solid var(--line);border-radius:4px;padding:10px;margin-top:8px;max-height:280px;overflow:auto">${escapeHtml(lastRawResponse.slice(0,2000))}</pre></details>` : "";
     document.getElementById("result").innerHTML=`<div class="panel pad" style="margin-top:16px;border-color:var(--rust-dim)"><b style="color:var(--rust)">Scoring failed.</b><div class="hint" style="margin-top:6px">${escapeHtml(msg)} Try again, or paste a fuller description of the opportunity.</div>${diag}</div>`;
   }finally{
+    scoringInFlight=false; releaseWake();
     btn.disabled=false; btn.textContent="Score it";
   }
 }
@@ -939,12 +967,12 @@ function renderHistory(){
       <div class="hscore" style="color:${col}">${h.composite}</div>
       <div class="hmeta"><div class="nm">${escapeHtml(h.asset_name)}</div><div class="dt">${ds} · cov ${h.coverage}%</div></div>
       <span class="pill ${h.cls}">${h.verdict}</span>
-      <button class="btn ghost danger" style="padding:6px 10px;font-size:12px" data-del="${h.id}">Delete</button>
+      <div class="hbtns"><button class="hicon" data-edit="${h.id}" title="Rename">Rename</button><button class="hicon danger" data-del="${h.id}" title="Delete">Delete</button></div>
     </div>`;
   }).join("");
   wrap.querySelectorAll(".hrow").forEach(row=>{
     row.addEventListener("click",e=>{
-      if(e.target.dataset.del) return;
+      if(e.target.closest("button")||e.target.closest("input")) return;   // don't open while renaming/deleting
       const h=history.find(x=>x.id===row.dataset.id); if(!h) return;
       document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));
       document.querySelector('.tab[data-view="evaluate"]').classList.add("active");
@@ -955,6 +983,26 @@ function renderHistory(){
   });
   wrap.querySelectorAll("[data-del]").forEach(b=>b.addEventListener("click",async e=>{
     e.stopPropagation(); history=history.filter(x=>x.id!==b.dataset.del); await storeSet("shark:history",history); renderHistory(); toast("Deleted");
+  }));
+  wrap.querySelectorAll("[data-edit]").forEach(b=>b.addEventListener("click",e=>{
+    e.stopPropagation();
+    const row=b.closest(".hrow"), h=history.find(x=>x.id===b.dataset.edit); if(!row||!h) return;
+    const nm=row.querySelector(".nm"); if(!nm||row.querySelector(".hedit")) return;
+    const inp=document.createElement("input");
+    inp.type="text"; inp.className="hedit"; inp.value=h.asset_name||""; inp.setAttribute("aria-label","Pitch name");
+    nm.replaceWith(inp); inp.focus(); inp.select();
+    let done=false;
+    const save=async()=>{
+      if(done) return; done=true;
+      const v=inp.value.trim();
+      if(v && v!==h.asset_name){
+        h.asset_name=v; if(h.full) h.full.asset_name=v;      // keep the stored scorecard in step
+        await storeSet("shark:history",history); renderHistory(); toast("Renamed");
+      } else { renderHistory(); }
+    };
+    inp.addEventListener("keydown",ev=>{ if(ev.key==="Enter"){ev.preventDefault();save();} else if(ev.key==="Escape"){done=true;renderHistory();} });
+    inp.addEventListener("blur",save);
+    inp.addEventListener("click",ev=>ev.stopPropagation());
   }));
 }
 document.getElementById("wipeBtn").addEventListener("click",async()=>{
