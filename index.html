@@ -12,6 +12,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Sharkfolio">
 <meta name="mobile-web-app-capable" content="yes">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
@@ -206,9 +207,34 @@
   .benchbig{font-size:22px;font-weight:600;color:var(--bone)}
   .benchmeta{font-size:11.5px;color:var(--muted-2);margin:2px 0 0;font-family:"IBM Plex Mono"}
   @media (prefers-reduced-motion: reduce){*{animation:none!important;transition:none!important}}
+  /* auth gate */
+  #authGate{position:fixed;inset:0;z-index:100;background:var(--ink);display:none;align-items:center;justify-content:center;padding:24px}
+  #authGate.show{display:flex}
+  .authcard{width:100%;max-width:380px}
+  .authcard h1{font-family:"Newsreader",serif;font-weight:600;font-size:30px;margin:0 0 2px;line-height:1}
+  .authcard h1 .fin{color:var(--brass)}
+  .authcard .sub{color:var(--muted);font-size:13px;margin:0 0 20px}
+  .authcard label.fld{margin-bottom:12px}
+  .authcard .btn{width:100%;justify-content:center;margin-top:4px}
+  .authtoggle{background:none;border:none;color:var(--brass);font-family:"Inter";font-size:13px;cursor:pointer;padding:8px;width:100%;margin-top:10px}
+  .authtoggle:hover{text-decoration:underline}
+  #authStatus{font-size:13px;margin-top:12px;min-height:18px}
 </style>
 </head>
 <body>
+<div id="authGate">
+  <div class="authcard">
+    <h1>Shark<span class="fin">folio</span></h1>
+    <div class="sub" id="authSub">Sign in to reach your saved evaluations.</div>
+    <label class="fld"><span class="lbl">Email</span>
+      <input type="email" id="authEmail" autocomplete="username" placeholder="you@example.com"></label>
+    <label class="fld"><span class="lbl">Password</span>
+      <input type="password" id="authPass" autocomplete="current-password" placeholder="••••••••"></label>
+    <button class="btn primary" id="authPrimary">Sign in</button>
+    <button class="authtoggle" id="authSwitch">First time here? Create your login</button>
+    <div id="authStatus"></div>
+  </div>
+</div>
 <div class="wrap">
 
   <header class="top">
@@ -331,7 +357,7 @@
           <button class="btn ghost danger" id="wipeBtn">Clear all</button>
         </div>
       </div>
-      <p class="hint" style="margin-top:10px">History is stored in this browser on this device — it does not sync between your phone and laptop, and clearing site data erases it. To move or back up evaluations: <b style="color:var(--bone)">Export JSON</b> on one device, then <b style="color:var(--bone)">Import JSON</b> on the other. Importing merges by entry, so re-importing the same file adds nothing and never overwrites what's already here.</p>
+      <p class="hint" style="margin-top:10px">History is saved to your account and syncs across your devices — clearing site data no longer loses it. <b style="color:var(--bone)">Export JSON</b> gives you an offline backup; <b style="color:var(--bone)">Import JSON</b> merges a file in by entry (re-importing the same file adds nothing and never overwrites).</p>
       <div id="historyList"></div>
     </div>
   </section>
@@ -377,8 +403,11 @@
         <span class="hint" id="setStatus" style="margin:0"></span>
       </div>
 
-      <div class="sec-title">App <span class="rule"></span></div>
-      <p class="hint" style="margin-top:8px">Version <span class="mono" id="verLine"></span>. Your Playbook, history, benchmark cache, key, and model live in this browser's local storage. Clearing site data or switching devices/browsers starts fresh — export your history from the History tab to keep a copy.</p>
+      <div class="sec-title">Account &amp; app <span class="rule"></span></div>
+      <p class="hint" style="margin-top:8px">Version <span class="mono" id="verLine"></span>. Signed in as <span class="mono" id="acctEmail">—</span>. Your Playbook and history are saved to your account (Supabase) and sync across devices; your API key and model stay on this device only. <b style="color:var(--bone)">Export JSON</b> from History for an offline backup.</p>
+      <div class="btn-row" style="margin-top:12px">
+        <button class="btn ghost" id="signOutBtn">Sign out</button>
+      </div>
     </div>
   </section>
 
@@ -390,7 +419,13 @@
 <div class="toast" id="toast"></div>
 
 <script>
-const APP_VERSION = "v2026:07:24-00:34"; // Asia/Tokyo — bump on every change to this file
+const APP_VERSION = "v2026:08:06-01:22"; // Asia/Tokyo — bump on every change to this file
+
+/* ---------- Supabase (Path B1: durable, synced storage) ---------- */
+const SB_URL = "https://towegspmywsmhlsjrpty.supabase.co";
+const SB_KEY = "sb_publishable_0vOIk1nrpD9nflDhqB0ETA_h5ZXUPru"; // publishable key — public by design, protected by RLS + auth
+const sb = window.supabase ? window.supabase.createClient(SB_URL, SB_KEY) : null;
+let currentUser = null;
 const DEFAULT_MODEL = "claude-sonnet-5"; // change in Settings; must be a model string valid for your Anthropic account
 function getKey(){ try{return localStorage.getItem("shark:apikey")||"";}catch(e){return "";} }
 function getModel(){ try{return localStorage.getItem("shark:model")||DEFAULT_MODEL;}catch(e){return DEFAULT_MODEL;} }
@@ -430,20 +465,157 @@ let bench = JSON.parse(JSON.stringify(DEFAULT_BENCH));
 let benchTriedThisSession = false;
 
 /* ---------- storage helpers ---------- */
+/* ---------- storage: localStorage mirror + Supabase sync ---------- */
 async function storeGet(k){ try{const v=localStorage.getItem(k); return v?JSON.parse(v):null;}catch(e){return null;} }
-async function storeSet(k,v){ try{localStorage.setItem(k, JSON.stringify(v));}catch(e){console.error(e);} }
+async function storeSet(k,v){
+  try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){}
+  if(!(currentUser && sb)) return;
+  try{
+    if(k==="shark:profile") await dbSaveProfile(v);
+    else if(k==="shark:history") await dbSyncHistory(v);
+  }catch(e){ console.error("cloud sync failed", e); }
+}
+
+/* ---------- Supabase data layer ---------- */
+async function dbSaveProfile(v){
+  await sb.from("sf_profile").upsert({
+    user_id: currentUser.id, comp:v.comp||"", port:v.port||"", bench:v.bench||"",
+    hurdle:v.hurdle||"", risk:v.risk||"", weights:v.weights||{}, updated_at:new Date().toISOString()
+  }, { onConflict:"user_id" });
+}
+async function dbLoadProfile(){
+  const {data,error}=await sb.from("sf_profile").select("*").eq("user_id",currentUser.id).maybeSingle();
+  if(error||!data) return null;
+  return {comp:data.comp||"",port:data.port||"",bench:data.bench||"",hurdle:data.hurdle||"",risk:data.risk||"",weights:data.weights||{}};
+}
+async function dbLoadHistory(){
+  const {data,error}=await sb.from("sf_evaluations").select("*").eq("user_id",currentUser.id).order("created_at",{ascending:false});
+  if(error||!data) return [];
+  return data.map(r=>({
+    id:String(r.client_id||r.id),
+    ts:(r.scorecard&&r.scorecard.ts)||Date.parse(r.created_at)||Date.now(),
+    asset_name:r.asset_name, composite:r.composite, coverage:r.coverage,
+    verdict:r.verdict, cls:r.cls, full:r.scorecard||{}
+  }));
+}
+async function dbSyncHistory(arr){
+  const uid=currentUser.id;
+  const rows=arr.map(h=>({
+    user_id:uid, client_id:String(h.id),
+    asset_name:h.asset_name||"Not stated", asset_type:(h.full&&h.full.asset_type)||"",
+    composite:h.composite||0, coverage:h.coverage||0, verdict:h.verdict||"", cls:h.cls||"grey",
+    confidence:(h.full&&h.full.confidence)||"", scorecard:h.full||{}
+  }));
+  if(rows.length) await sb.from("sf_evaluations").upsert(rows,{onConflict:"user_id,client_id"});
+  const ids=arr.map(h=>String(h.id));
+  let del=sb.from("sf_evaluations").delete().eq("user_id",uid);
+  if(ids.length) del=del.not("client_id","in","("+ids.join(",")+")");
+  await del;
+}
+function mergeHistories(a,b){
+  const seen=new Set(), out=[];
+  for(const h of (a||[])){ if(h&&!seen.has(h.id)){ seen.add(h.id); out.push(h); } }
+  for(const h of (b||[])){ if(h&&!seen.has(h.id)){ seen.add(h.id); out.push(h); } }
+  out.sort((x,y)=>(y.ts||0)-(x.ts||0));
+  return out.slice(0,100);
+}
+
+/* ---------- auth ---------- */
+let authMode="signin", rtChannel=null, rtTimer=null;
+function showGate(){ const g=document.getElementById("authGate"); if(g) g.classList.add("show"); }
+function hideGate(){ const g=document.getElementById("authGate"); if(g) g.classList.remove("show"); }
+function setAuthStatus(m,ok){ const s=document.getElementById("authStatus"); if(s){ s.textContent=m||""; s.style.color=ok?"var(--pine)":"var(--rust)"; } }
+function renderAuthMode(){
+  const p=document.getElementById("authPrimary"), sw=document.getElementById("authSwitch"), sub=document.getElementById("authSub"), pw=document.getElementById("authPass");
+  if(!p) return;
+  p.textContent = authMode==="signin"?"Sign in":"Create login";
+  sw.textContent = authMode==="signin"?"First time here? Create your login":"Already have a login? Sign in";
+  sub.textContent = authMode==="signin"?"Sign in to reach your saved evaluations.":"Create your one-time login — only you will have it.";
+  pw.setAttribute("autocomplete", authMode==="signin"?"current-password":"new-password");
+}
+async function doAuth(){
+  if(!sb) return;
+  const email=(document.getElementById("authEmail").value||"").trim();
+  const pass=document.getElementById("authPass").value||"";
+  if(!email||!pass){ setAuthStatus("Enter an email and password."); return; }
+  if(authMode==="signup" && pass.length<8){ setAuthStatus("Use at least 8 characters."); return; }
+  const btn=document.getElementById("authPrimary"); btn.disabled=true; const ol=btn.textContent; btn.innerHTML='<span class="spin"></span>';
+  try{
+    const {data,error} = authMode==="signin"
+      ? await sb.auth.signInWithPassword({email,password:pass})
+      : await sb.auth.signUp({email,password:pass});
+    if(error){ setAuthStatus(error.message||"Sign-in failed."); }
+    else if(data && data.session){ setAuthStatus("",true); }            // onAuthStateChange runs afterAuth
+    else if(authMode==="signup"){ setAuthStatus("Account created — now sign in.",true); authMode="signin"; }
+    else { setAuthStatus("Check your details and try again."); }
+  }catch(e){ setAuthStatus("Network error reaching sign-in."); }
+  finally{ btn.disabled=false; btn.textContent=ol; renderAuthMode(); }
+}
+async function signOut(){
+  if(!sb) return;
+  try{ if(rtChannel){ sb.removeChannel(rtChannel); rtChannel=null; } await sb.auth.signOut(); }catch(e){}
+  currentUser=null; history=[]; renderHistory(); showGate();
+}
+function subscribeRealtime(){
+  if(!sb||!currentUser||rtChannel) return;
+  rtChannel=sb.channel("sf_evals_"+currentUser.id)
+    .on("postgres_changes",{event:"*",schema:"public",table:"sf_evaluations",filter:"user_id=eq."+currentUser.id},()=>{
+      clearTimeout(rtTimer);
+      rtTimer=setTimeout(async()=>{
+        try{ const merged=mergeHistories(await dbLoadHistory(), history); history=merged;
+          try{ localStorage.setItem("shark:history", JSON.stringify(merged)); }catch(e){}
+          renderHistory();
+        }catch(e){}
+      },400);
+    }).subscribe();
+}
+async function loadAllData(){
+  const localProfile=await storeGet("shark:profile");
+  const localHist=await storeGet("shark:history");
+  let dbProfile=null, dbHist=[];
+  try{ dbProfile=await dbLoadProfile(); dbHist=await dbLoadHistory(); }catch(e){ console.error("cloud load failed",e); }
+  const base={comp:DEFAULT_COMPETENCE,port:"",bench:"",hurdle:"",risk:"",weights:{...DEFAULT_WEIGHTS}};
+  if(dbProfile){ profile=Object.assign(base,dbProfile); profile.weights=Object.assign({...DEFAULT_WEIGHTS},dbProfile.weights||{}); }
+  else if(localProfile){ profile=Object.assign(profile,localProfile); profile.weights=Object.assign({...DEFAULT_WEIGHTS},localProfile.weights||{}); dbSaveProfile(profile).catch(()=>{}); }
+  history=mergeHistories(dbHist, Array.isArray(localHist)?localHist:[]);
+  await storeSet("shark:history", history);   // mirrors locally + heals any local-only rows into the cloud
+  const b=await storeGet("shark:bench"); if(b){ bench.trailing10=Object.assign({...DEFAULT_BENCH.trailing10},b.trailing10||{}); bench.longRun=Object.assign({...DEFAULT_BENCH.longRun},b.longRun||{}); }
+}
+async function afterAuth(){
+  hideGate();
+  const em=document.getElementById("acctEmail"); if(em) em.textContent=currentUser.email||"—";
+  await loadAllData();
+  fillProfileForm(); buildWeightGrid(); renderHistory(); updateProfileWarn(); renderBench(); fillSettings();
+  maybeRefreshBench();
+  subscribeRealtime();
+}
 
 /* ---------- boot ---------- */
 async function boot(){
   document.getElementById("ver").innerHTML = APP_VERSION + '<br><span class="dot">●</span> ready';
-  const p = await storeGet("shark:profile"); if(p){ profile = Object.assign(profile,p); profile.weights = Object.assign({...DEFAULT_WEIGHTS}, p.weights||{}); }
-  const h = await storeGet("shark:history"); if(Array.isArray(h)) history = h;
-  const b = await storeGet("shark:bench");
-  if(b){ bench.trailing10 = Object.assign({...DEFAULT_BENCH.trailing10}, b.trailing10||{}); bench.longRun = Object.assign({...DEFAULT_BENCH.longRun}, b.longRun||{}); }
   fillProfileForm(); buildWeightGrid(); buildMethod(); renderHistory(); updateProfileWarn(); renderBench(); fillSettings();
-  maybeRefreshBench();
+  if(!sb){   // Supabase unavailable — degrade to local-only so the app still opens
+    const lp=await storeGet("shark:profile"); if(lp){ profile=Object.assign(profile,lp); profile.weights=Object.assign({...DEFAULT_WEIGHTS},lp.weights||{}); }
+    const lh=await storeGet("shark:history"); if(Array.isArray(lh)) history=lh;
+    const b=await storeGet("shark:bench"); if(b){ bench.trailing10=Object.assign({...DEFAULT_BENCH.trailing10},b.trailing10||{}); bench.longRun=Object.assign({...DEFAULT_BENCH.longRun},b.longRun||{}); }
+    fillProfileForm(); buildWeightGrid(); renderHistory(); updateProfileWarn(); renderBench();
+    maybeRefreshBench(); return;
+  }
+  try{
+    const {data:{session}}=await sb.auth.getSession();
+    if(session&&session.user){ currentUser=session.user; await afterAuth(); } else { showGate(); }
+    sb.auth.onAuthStateChange((_e,s)=>{
+      if(s&&s.user){ if(!currentUser||currentUser.id!==s.user.id){ currentUser=s.user; afterAuth(); } }
+      else { currentUser=null; showGate(); }
+    });
+  }catch(e){ console.error("auth init",e); showGate(); }
 }
 document.addEventListener("DOMContentLoaded", boot);
+document.getElementById("authPrimary").addEventListener("click", doAuth);
+document.getElementById("authSwitch").addEventListener("click", ()=>{ authMode=authMode==="signin"?"signup":"signin"; setAuthStatus(""); renderAuthMode(); });
+document.getElementById("authPass").addEventListener("keydown", e=>{ if(e.key==="Enter") doAuth(); });
+document.getElementById("signOutBtn").addEventListener("click", signOut);
+renderAuthMode();
 
 /* ---------- tabs ---------- */
 document.querySelectorAll(".tab").forEach(t=>{
@@ -734,7 +906,7 @@ async function runScore(isRetry){
   if(!getKey()){ toast("Add your Anthropic API key in Settings first","err"); document.querySelector('.tab[data-view="settings"]').click(); return; }
   lastRawResponse=""; lastStopReason=""; wasHiddenDuringScore=false; scoringInFlight=true; acquireWake();
   const btn=document.getElementById("scoreBtn"); btn.disabled=true; btn.innerHTML='<span class="spin"></span> Reading & scoring…';
-  document.getElementById("result").innerHTML="";
+  document.getElementById("result").innerHTML=`<div class="panel pad" style="margin-top:16px"><div style="display:flex;align-items:center;gap:12px"><span class="spin"></span><div><b>${isRetry?"Retrying the score…":"Scoring…"}</b><div class="hint" style="margin-top:4px">Keep Sharkfolio open — iOS cancels requests from apps sent to the background. With several images this can take up to a minute.</div></div></div></div>`;
 
   const content=[];
   pendingImages.forEach(im=>content.push({type:"image",source:{type:"base64",media_type:im.media_type,data:im.b64}}));
@@ -768,11 +940,17 @@ async function runScore(isRetry){
     console.error(err);
     let msg=err.message||String(err);
     const netFail=/load failed|failed to fetch|networkerror|network request failed|aborted/i.test(msg);
-    if(netFail && wasHiddenDuringScore){
-      if(!isRetry && document.visibilityState!=="visible"){ autoRetryArmed=true; }
-      msg = autoRetryArmed
-        ? "The screen locked mid-request, which iOS cancels. Sharkfolio will retry automatically when you reopen it."
-        : "The screen locked or the app went to the background mid-request, which iOS cancels. Tap Score it to run it again.";
+    if(netFail && wasHiddenDuringScore && !isRetry){
+      if(document.visibilityState==="visible"){
+        msg="The app was interrupted mid-request — iOS cancels these. Retrying now…";
+        toast("Interrupted — retrying the score");
+        setTimeout(()=>runScore(true), 500);          // page is back; just run it again
+      } else {
+        autoRetryArmed=true;                          // still away; resume on return
+        msg="The screen locked mid-request, which iOS cancels. Sharkfolio will retry automatically when you reopen it.";
+      }
+    } else if(netFail && wasHiddenDuringScore){
+      msg="Interrupted again while running. Keep the app open and tap Score it — with several images a score can take up to a minute.";
     } else if(netFail){
       msg="The request didn't reach Anthropic — usually the payload was too large or the connection dropped. Try fewer images, or score in two batches.";
     }
